@@ -159,6 +159,7 @@ class Logger:
         self.log_dir.mkdir(exist_ok=True)
         self.current_log_file = None
         self.start_new_session()
+        self.current_mod_ids = []
     
     def start_new_session(self):
         """Начинает новую сессию логирования"""
@@ -309,7 +310,298 @@ class SteamWorkshopDownloader:
         self.load_settings()
         self.load_output_mode()
         ConsoleManager.load_settings()
+
+    def validate_mod_folder(self, mod_path: Path) -> bool:
+        return any(mod_path.iterdir())
     
+    def download_appid_list(self) -> Path:
+        """Скачивает файл со списком App ID игр (основной + резервный источник)"""
+        import requests
+
+        # Источники (по приоритету)
+        sources = [
+            {
+                "name": "jsnli/steamappidlist (ежедневно)",
+                "urls": [
+                    "https://raw.githubusercontent.com/jsnli/steamappidlist/master/data/games_appid.json",
+                    "https://raw.githubusercontent.com/jsnli/steamappidlist/main/data/games_appid.json"
+                ],
+                "max_size_mb": 50
+            },
+            {
+                "name": "dgibbs64/SteamCMD-AppID-List (архив 2023)",
+                "urls": [
+                    "https://raw.githubusercontent.com/dgibbs64/SteamCMD-AppID-List/master/steamcmd_appid.json"
+                ],
+                "max_size_mb": 20
+            }
+        ]
+
+        cache_file = Path.cwd() / "steam_appid_list.json"
+        info_file = Path.cwd() / "steam_appid_source.txt"
+
+        # Проверяем, нужно ли обновлять (если файл старше 7 дней)
+        need_update = True
+        if cache_file.exists():
+            file_age = time.time() - cache_file.stat().st_mtime
+            if file_age < 7 * 24 * 3600:  # 7 дней
+                need_update = False
+                source_info = "неизвестно"
+                if info_file.exists():
+                    try:
+                        source_info = info_file.read_text(encoding='utf-8').strip()
+                    except:
+                        pass
+                print(Colors.success(f"✅ Использую локальный список игр (от {datetime.fromtimestamp(cache_file.stat().st_mtime).strftime('%d.%m.%Y')}, источник: {source_info})"))
+
+        if need_update:
+            for i, source in enumerate(sources, 1):
+                # Пробуем каждый URL из списка
+                for url in source['urls']:
+                    print(Colors.info(f"📡 Попытка: скачиваю список из {source['name']}..."))
+                    try:
+                        response = requests.get(url, timeout=120)
+                        response.raise_for_status()
+
+                        # Проверяем размер
+                        content_size = len(response.content)
+                        content_size_mb = content_size / (1024 * 1024)
+
+                        if content_size_mb > source['max_size_mb']:
+                            print(Colors.warning(f"⚠ Файл слишком большой ({content_size_mb:.1f} МБ), пропускаю"))
+                            break  # Переходим к следующему источнику
+
+                        with open(cache_file, 'wb') as f:
+                            f.write(response.content)
+
+                        # Сохраняем информацию об источнике
+                        info_file.write_text(source['name'], encoding='utf-8')
+
+                        print(Colors.success(f"✅ Список игр успешно загружен! ({content_size_mb:.1f} МБ)"))
+                        return cache_file
+
+                    except requests.exceptions.Timeout:
+                        print(Colors.warning(f"⚠ Таймаут подключения"))
+                        continue
+                    except requests.exceptions.RequestException as e:
+                        print(Colors.warning(f"⚠ Ошибка сети: {e}"))
+                        continue
+                    except Exception as e:
+                        print(Colors.warning(f"⚠ Не удалось скачать: {e}"))
+                        continue
+
+            # Если все источники не сработали
+            if cache_file.exists():
+                print(Colors.warning("⚠ Не удалось скачать свежий список"))
+                print(Colors.info("💡 Использую сохраненную копию"))
+                return cache_file
+            else:
+                print(Colors.error("❌ Нет локальной копии. Поиск будет недоступен."))
+                return None
+
+        return cache_file
+
+    def search_game_by_name(self, query: str) -> List[Tuple[str, str]]:
+        """Ищет игру по названию в локальном JSON-файле (без API)"""
+        import json
+
+        if not query or len(query.strip()) < 2:
+            print(Colors.error("❌ Введите хотя бы 2 символа для поиска"))
+            return []
+
+        query_lower = query.lower().strip()
+        print(Colors.info(f"🔍 Поиск игры: '{query}'"))
+
+        # Скачиваем или загружаем локальный файл
+        cache_file = self.download_appid_list()
+        if not cache_file or not cache_file.exists():
+            print(Colors.error("❌ Нет списка игр для поиска"))
+            return []
+
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Определяем формат файла
+            # Формат 1: {"appid": "name"} или {"123": "Game Name"} (dgibbs64)
+            # Формат 2: [{"appid": 123, "name": "Game Name"}] (список словарей)
+            # Формат 3: {"apps": [{"appid": 123, "name": "Game Name"}]} (Steam API)
+
+            results = []
+
+            if isinstance(data, list):
+                # Формат: список словарей [{"appid": 123, "name": "Game", ...}]
+                for item in data:
+                    if isinstance(item, dict):
+                        app_id = str(item.get("appid", ""))
+                        name = str(item.get("name", ""))
+                        if not name or not app_id:
+                            continue
+                    else:
+                        continue
+
+                    name_lower = name.lower()
+
+                    if name_lower == query_lower:
+                        results.insert(0, (name, app_id))
+                    elif name_lower.startswith(query_lower):
+                        results.append((name, app_id))
+                    elif query_lower in name_lower:
+                        results.append((name, app_id))
+
+            elif isinstance(data, dict):
+                # Проверяем, есть ли ключ "apps" (формат Steam API)
+                if "apps" in data:
+                    apps_list = data["apps"]
+                    if isinstance(apps_list, list):
+                        for app in apps_list:
+                            if isinstance(app, dict):
+                                app_id = str(app.get("appid", app.get("appId", "")))
+                                name = app.get("name", "")
+                                if not name or not app_id:
+                                    continue
+
+                                name_lower = name.lower()
+                                if name_lower == query_lower:
+                                    results.insert(0, (name, app_id))
+                                elif name_lower.startswith(query_lower):
+                                    results.append((name, app_id))
+                                elif query_lower in name_lower:
+                                    results.append((name, app_id))
+                else:
+                    # Формат: {"appid": "name"} (dgibbs64)
+                    for app_id, name in data.items():
+                        # Пропускаем нестроковые значения
+                        if not isinstance(name, str):
+                            continue
+
+                        name_lower = name.lower()
+
+                        if name_lower == query_lower:
+                            results.insert(0, (name, str(app_id)))
+                        elif name_lower.startswith(query_lower):
+                            results.append((name, str(app_id)))
+                        elif query_lower in name_lower:
+                            results.append((name, str(app_id)))
+
+            # Убираем дубликаты
+            seen = set()
+            unique_results = []
+            for name, app_id in results:
+                if app_id not in seen:
+                    seen.add(app_id)
+                    unique_results.append((name, app_id))
+
+            # Сортируем
+            def sort_key(item):
+                name, _ = item
+                name_lower_item = name.lower()
+                if name_lower_item == query_lower:
+                    return (0, len(name))
+                elif name_lower_item.startswith(query_lower):
+                    return (1, len(name))
+                else:
+                    return (2, len(name))
+
+            unique_results.sort(key=sort_key)
+            unique_results = unique_results[:100]  # Увеличено до 100 для лучшего охвата
+
+            if not unique_results:
+                print(Colors.warning(f"⚠ По запросу '{query}' ничего не найдено"))
+                print(Colors.info("💡 Советы:"))
+                print("   1. Попробуйте ввести название на английском")
+                print("   2. Используйте более короткий запрос")
+                print("   3. Найдите App ID игры на steamdb.info и укажите вручную")
+                print()
+                manual = input("Ввести App ID вручную? (y/n): ").lower()
+                if manual == 'y':
+                    app_id = input("   App ID: ").strip()
+                    if app_id and app_id.isdigit():
+                        # Попробуем найти название через Steam API
+                        print(Colors.info("🔍 Определяю название игры..."))
+                        try:
+                            import requests
+                            resp = requests.get(f"https://store.steampowered.com/api/appdetails?appids={app_id}", timeout=10)
+                            data = resp.json()
+                            if app_id in data and data[app_id].get("success"):
+                                game_name = data[app_id]["data"].get("name", f"App {app_id}")
+                                print(Colors.success(f"✅ Найдена игра: {game_name}"))
+                                return [(game_name, app_id)]
+                            else:
+                                print(Colors.warning("⚠ Не удалось определить название, использую App ID"))
+                                return [(f"App {app_id}", app_id)]
+                        except:
+                            return [(f"App {app_id}", app_id)]
+                    else:
+                        print(Colors.error("❌ Неверный App ID"))
+                return []
+
+            print(Colors.success(f"\n✅ Найдено игр: {len(unique_results)}"))
+            return unique_results
+
+        except json.JSONDecodeError as e:
+            print(Colors.error(f"❌ Ошибка чтения файла со списком игр: {e}"))
+            return []
+        except Exception as e:
+            print(Colors.error(f"❌ Ошибка при поиске: {e}"))
+            return []
+
+
+    def export_mods_list(self, mod_ids: List[str], file_path: Path = None):
+        """Экспортирует список ID модов в файл"""
+        if not file_path:
+            file_path = Path(input("💾 Имя файла для экспорта (например, my_mods.txt): ").strip())
+        file_path.write_text("\n".join(mod_ids), encoding='utf-8')
+        print(Colors.success(f"✅ Экспортировано {len(mod_ids)} модов в {file_path}"))
+
+    def import_mods_list(self, file_path: Path = None) -> List[str]:
+        """Импортирует список ID модов из файла"""
+        if not file_path:
+            file_path = Path(input("📂 Файл для импорта: ").strip())
+        if not file_path.exists():
+            print(Colors.error("Файл не найден"))
+            return []
+        lines = file_path.read_text(encoding='utf-8').strip().splitlines()
+        mod_ids = [l.strip() for l in lines if l.strip().isdigit()]
+        print(Colors.success(f"✅ Импортировано {len(mod_ids)} модов"))
+        return mod_ids
+
+    def download_mods_list(self, mod_ids: List[str]):
+        """Скачивает список модов по ID"""
+        for mod_id in mod_ids:
+            self.download_single_mod(mod_id)
+
+    def batch_download(self, file_path: Path = None):
+        """Загружает список URL или ID из текстового файла (построчно)"""
+        if not file_path:
+            path_input = input("📁 Путь к файлу со списком (построчно): ").strip()
+            if not path_input:
+                print(Colors.error("❌ Путь не указан"))
+                return
+            file_path = Path(path_input)
+    
+        if not file_path.exists():
+            print(Colors.error(f"❌ Файл не найден: {file_path}"))
+            input("Нажмите Enter...")
+            return
+    
+        lines = file_path.read_text(encoding='utf-8').strip().splitlines()
+        items = [l.strip() for l in lines if l.strip()]
+    
+        collection_urls = [i for i in items if "steamcommunity.com" in i or "workshop" in i]
+        mod_ids = [i for i in items if i.isdigit()]
+    
+        print(Colors.info(f"\n📊 Найдено коллекций: {len(collection_urls)}, модов: {len(mod_ids)}"))
+    
+        for url in collection_urls:
+            self.download_collection(url)
+    
+        for mod_id in mod_ids:
+            self.download_single_mod(mod_id)
+    
+        print(Colors.success("\n✅ Пакетная загрузка завершена"))
+        input("Нажмите Enter...")
+
     def load_output_mode(self):
         """Загружает сохраненный режим вывода"""
         mode_file = Path.cwd() / "output_mode.txt"
@@ -463,13 +755,14 @@ class SteamWorkshopDownloader:
     def select_game(self):
         """Меню выбора игры"""
         ConsoleManager.clear_and_show_header("🎮 ВЫБОР ИГРЫ")
-        
+
         print("\n1. 🎮 RimWorld (по умолчанию)")
         print("2. 🎲 Своя игра (указать App ID вручную)")
+        print("3. 🔍 Поиск игры по названию (обновляемая база, ~180 МБ)")
         print("="*60)
-        
-        choice = input("\nВыберите игру (1-2): ").strip()
-        
+
+        choice = input("\nВыберите игру (1-3): ").strip()
+
         if choice == "1":
             self.game_name = "RimWorld"
             self.game_id = "294100"
@@ -479,26 +772,81 @@ class SteamWorkshopDownloader:
             self.logger.info(f"Выбрана игра: {self.game_name} (ID: {self.game_id})")
             input("\nНажмите Enter для продолжения...")
             return True
-        
+
         elif choice == "2":
             print("\n📝 Введите данные для своей игры:")
             self.game_name = input("   Название игры: ").strip()
             if not self.game_name:
                 self.game_name = "Custom Game"
-            
-            self.game_id = input("   App ID игры (можно найти на SteamDB): ").strip()
+
+            print(Colors.info("\n💡 Где найти App ID?"))
+            print("   1. Откройте страницу игры в Steam (можно через VPN)")
+            print("   2. Или найдите на сайте steamdb.info")
+            print("   3. Или спросите в поисковике 'App ID [название игры]'")
+
+            self.game_id = input("\n   App ID игры: ").strip()
             if not self.game_id:
                 print(Colors.error("❌ App ID обязателен"))
                 input("\nНажмите Enter для продолжения...")
                 return False
-            
+
+            if not self.game_id.isdigit():
+                print(Colors.warning("⚠ App ID должен состоять только из цифр"))
+                confirm = input("Продолжить? (y/n): ").lower()
+                if confirm != 'y':
+                    return False
+
             ConsoleManager.clear_and_show_header("🎮 ВЫБОР ИГРЫ")
             print(Colors.success(f"\n✅ Выбрана игра: {self.game_name} (App ID: {self.game_id})"))
             self.save_settings()
             self.logger.info(f"Выбрана игра: {self.game_name} (ID: {self.game_id})")
             input("\nНажмите Enter для продолжения...")
             return True
-        
+
+        elif choice == "3":
+            query = input("\n🔍 Введите название игры (на английском): ").strip()
+            if not query:
+                print(Colors.error("❌ Название не введено"))
+                time.sleep(1)
+                return False
+
+            if len(query) < 2:
+                print(Colors.error("❌ Введите хотя бы 2 символа"))
+                time.sleep(1)
+                return False
+
+            results = self.search_game_by_name(query)
+
+            if not results:
+                input("\nНажмите Enter для продолжения...")
+                return False
+
+            print("\n📋 Результаты поиска:")
+            print("-" * 60)
+
+            for i, (name, app_id) in enumerate(results[:20], 1):
+                display_name = name if len(name) <= 55 else name[:52] + "..."
+                print(f"  {i:2}. {Colors.colorize(display_name)}")
+                print(f"      🆔 App ID: {Colors.info(app_id)}")
+                print()
+
+            print("-" * 60)
+            max_choice = min(20, len(results))
+            pick = input(f"\nВыберите номер (1-{max_choice}) или Enter для отмены: ").strip()
+
+            if pick.isdigit() and 1 <= int(pick) <= max_choice:
+                self.game_name, self.game_id = results[int(pick)-1]
+                ConsoleManager.clear_and_show_header("🎮 ВЫБОР ИГРЫ")
+                print(Colors.success(f"\n✅ Выбрана игра: {self.game_name}"))
+                print(Colors.info(f"   App ID: {self.game_id}"))
+                self.save_settings()
+                self.logger.info(f"Выбрана игра: {self.game_name} (ID: {self.game_id})")
+            else:
+                print(Colors.warning("❌ Выбор отменен"))
+
+            input("\nНажмите Enter для продолжения...")
+            return True
+
         else:
             print(Colors.error("❌ Неверный выбор"))
             time.sleep(1)
@@ -922,6 +1270,7 @@ class SteamWorkshopDownloader:
         print(Colors.info(f"\n🔍 Анализ коллекции: {collection_url}"))
         mod_ids = self.get_mod_ids_from_collection(collection_url)
         
+        
         if not mod_ids:
             print(Colors.warning("\n⚠ Не удалось получить список модов"))
             input("\nНажмите Enter для продолжения...")
@@ -1083,10 +1432,11 @@ class SteamWorkshopDownloader:
             
             print("\n1. 📦 Скачать коллекцию модов (несколько модов по URL)")
             print("2. 🔧 Скачать один мод (по ID)")
-            print("3. ↩️ Назад в главное меню")
+            print("3. 📚 Пакетная загрузка (несколько коллекций/ID из файла)")
+            print("4. ↩️ Назад в главное меню")
             print("="*60)
             
-            choice = input("\nВыберите действие (1-3): ").strip()
+            choice = input("\nВыберите действие (1-4): ").strip()
             
             if choice == "1":
                 ConsoleManager.clear_and_show_header("📥 СКАЧИВАНИЕ КОЛЛЕКЦИИ")
@@ -1105,8 +1455,11 @@ class SteamWorkshopDownloader:
                 else:
                     print(Colors.error("❌ Введите корректный ID мода (только цифры)"))
                     time.sleep(1)
-            
+
             elif choice == "3":
+                self.batch_download()        
+            
+            elif choice == "4":
                 break
             
             else:
@@ -1353,7 +1706,8 @@ def main():
         print("6. 🔇 Настройка режима вывода (тихий/лог)")
         print("7. 🖥 Настройка консоли (очистка истории)")
         print("8. 📦 Установить библиотеки (requests, beautifulsoup4)")
-        print("9. 🚪 Выход")
+        print("9. 📤 Экспорт/импорт списка модов")
+        print("0. 🚪 Выход")
         print("="*60)
         
         # Статусы
@@ -1388,7 +1742,7 @@ def main():
         else:
             print(f"🔧 SteamCMD: {Colors.error('❌ не установлен')}")
         
-        choice = input("\nВыберите действие (1-9): ").strip()
+        choice = input("\nВыберите действие (0-9, 0 для выхода): ").strip()
         
         if choice == "1":
             if not downloader.check_steamcmd():
@@ -1463,6 +1817,30 @@ def main():
             install_libraries()
         
         elif choice == "9":
+            ConsoleManager.clear_and_show_header("📤 ЭКСПОРТ/ИМПОРТ")
+            print("\n1. 📤 Экспортировать текущий список модов")
+            print("2. 📥 Импортировать список и скачать")
+            print("3. ↩️ Назад")
+            print("="*60)
+            sub = input("\nВыберите действие (1-3): ").strip()
+            if sub == "1":
+                if hasattr(downloader, 'current_mod_ids') and downloader.current_mod_ids:
+                    downloader.export_mods_list(downloader.current_mod_ids)
+                else:
+                    print(Colors.warning("⚠ Нет загруженного списка модов"))
+                input("\nНажмите Enter для продолжения...")
+            elif sub == "2":
+                mods = downloader.import_mods_list()
+                if mods:
+                    downloader.current_mod_ids = mods
+                    downloader.download_mods_list(mods)
+            elif sub == "3":
+                continue
+            else:
+                print(Colors.error("❌ Неверный выбор"))
+                time.sleep(1)
+
+        elif choice == "0":
             ConsoleManager.clear()
             print("\n👋 До свидания!")
             break
