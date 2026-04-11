@@ -6,3 +6,6 @@ echo "output_mode.txt" >> .gitignore
 echo "*_mods/" >> .gitignore
 echo "__pycache__/" >> .gitignore
 echo "*.pyc" >> .gitignore
+echo "build/" >> .gitignore
+echo "dist/" >> .gitignore
+echo "*.spec" >> .gitignore
