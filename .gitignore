@@ -1,0 +1,8 @@
+echo "# Логи и настройки" > .gitignore
+echo "logs/" >> .gitignore
+echo "*_settings.txt" >> .gitignore
+echo "console_settings.txt" >> .gitignore
+echo "output_mode.txt" >> .gitignore
+echo "*_mods/" >> .gitignore
+echo "__pycache__/" >> .gitignore
+echo "*.pyc" >> .gitignore
