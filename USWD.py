@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Universal Steam Workshop Downloader by KtoIa
+Universal Steam Workshop Downloader by KtoIa v1.3
 Скачивание коллекций модов через SteamCMD
 """
 
@@ -1692,7 +1692,7 @@ def main():
         libs_installed = check_libraries()
         
         print("="*60)
-        print(Colors.header("  UNIVERSAL STEAM WORKSHOP DOWNLOADER v1.2"))
+        print(Colors.header("  UNIVERSAL STEAM WORKSHOP DOWNLOADER v1.3"))
         print(Colors.colorize("  Скачивание коллекций модов через SteamCMD"))
         print(Colors.colorize(f"  {Colors.BRIGHT_MAGENTA}by KtoIa{Colors.RESET}"))
         print("="*60)
