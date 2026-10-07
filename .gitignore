@@ -1,11 +1,35 @@
-echo "# Логи и настройки" > .gitignore
-echo "logs/" >> .gitignore
-echo "*_settings.txt" >> .gitignore
-echo "console_settings.txt" >> .gitignore
-echo "output_mode.txt" >> .gitignore
-echo "*_mods/" >> .gitignore
-echo "__pycache__/" >> .gitignore
-echo "*.pyc" >> .gitignore
-echo "build/" >> .gitignore
-echo "dist/" >> .gitignore
-echo "*.spec" >> .gitignore
+# Логи и временные данные
+logs/
+*.log
+
+# Пользовательские настройки
+*_settings.txt
+console_settings.txt
+output_mode.txt
+
+# Скачанные моды
+*_mods/
+
+# Кэш списка игр Steam
+steam_appid_list.json
+steam_appid_source.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+
+# Сборка PyInstaller
+build/
+dist/
+*.spec
+
+# Редакторы / ОС
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
