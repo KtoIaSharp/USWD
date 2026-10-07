@@ -16,6 +16,33 @@ from uswd.config import (
 from uswd.downloader import SteamWorkshopDownloader
 
 
+def setup_console():
+    """Настраивает консоль Windows: UTF-8 и поддержку ANSI-цветов.
+
+    Без этого вывод эмодзи на консоли с кодовой страницей cp866/cp1251
+    вызывает UnicodeEncodeError, а ANSI-коды печатаются как мусор.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleOutputCP(65001)
+            kernel32.SetConsoleCP(65001)
+            # Включаем виртуальную обработку ANSI (VT) для окна консоли
+            handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+            mode = ctypes.c_uint32()
+            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+        except Exception:
+            pass
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def color_settings_menu():
     """Меню выбора цвета."""
     ConsoleManager.clear_and_show_header("🎨 ВЫБОР ЦВЕТА ИНТЕРФЕЙСА")
@@ -116,6 +143,8 @@ def check_libraries():
 
 def main():
     """Главное меню программы."""
+    setup_console()
+
     # Загружаем сохраненный цвет
     Colors.load(Path.cwd() / COLOR_FILE)
 
